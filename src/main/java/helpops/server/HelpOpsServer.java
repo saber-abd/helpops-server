@@ -16,17 +16,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class HelpOpsServer extends UnicastRemoteObject implements IHelpOps {
 
     private static final String FICHIER_INCIDENTS = "incidents.dat";
-
-    // Reference vers le serveur Auth (obtenue via RMI au demarrage)
     private IAuthService auth;
-
     private List<Incident> incidents;
     private AtomicInteger  compteurId;
 
     public HelpOpsServer(String authHost, int authPort) throws RemoteException {
         super();
-
-        // Connexion au serveur Auth via RMI
         try {
             Registry authRegistry = LocateRegistry.getRegistry(authHost, authPort);
             auth = (IAuthService) authRegistry.lookup("AuthService");
@@ -42,8 +37,7 @@ public class HelpOpsServer extends UnicastRemoteObject implements IHelpOps {
     }
 
 
-    // Methodes RMI (definies dans IHelpOps)
-
+    // Methodes RMI (dans IHelpOps)
     @Override
     public Incident signalerIncident(String tokenValeur, String categorie,
                                      String titre, String description) throws RemoteException {
@@ -101,8 +95,7 @@ public class HelpOpsServer extends UnicastRemoteObject implements IHelpOps {
         return login;
     }
 
-    // Save des incidents (serialisation Java)
-
+    // save et charge données
     @SuppressWarnings("unchecked")
     private void chargerIncidents() {
         try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream(FICHIER_INCIDENTS))) {
@@ -126,10 +119,7 @@ public class HelpOpsServer extends UnicastRemoteObject implements IHelpOps {
         }
     }
 
-    // Demarrage
-
     public static void main(String[] args) {
-        // Adresse du serveur Auth (par defaut localhost, sinon 1er argument)
         String authHost = (args.length > 0) ? args[0] : "localhost";
         int    authPort = 2000;
 
