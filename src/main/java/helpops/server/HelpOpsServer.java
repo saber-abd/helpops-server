@@ -1,7 +1,7 @@
 package helpops.server;
 
-import helpops.interfaces.IAuthService;
-import helpops.interfaces.IHelpOps;
+import helpops.interfaces.RMIAuthService;
+import helpops.interfaces.RMIHelpOps;
 import helpops.model.Incident;
 
 import java.io.*;
@@ -13,31 +13,29 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
-public class HelpOpsServer extends UnicastRemoteObject implements IHelpOps {
-
-    private static final String FICHIER_INCIDENTS = "incidents.dat";
-    private IAuthService auth;
-    private List<Incident> incidents;
-    private AtomicInteger  compteurId;
+public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
+    private static final String FICHIER_INCIDENTS = "incidents.dat";  // stockage incidents
+    private RMIAuthService auth;
+    private List<Incident> incidents;  // liste en mémoire
+    private AtomicInteger  compteurId;  // pour id uniques
 
     public HelpOpsServer(String authHost, int authPort) throws RemoteException {
         super();
         try {
             Registry authRegistry = LocateRegistry.getRegistry(authHost, authPort);
-            auth = (IAuthService) authRegistry.lookup("AuthService");
+            auth = (RMIAuthService) authRegistry.lookup("AuthService");
             System.out.println("[SERVER] Serveur Auth joint : " + auth.ping());
         } catch (Exception e) {
             System.err.println("[SERVER] Impossible de joindre le serveur Auth ("
                 + authHost + ":" + authPort + ") : " + e.getMessage());
             System.exit(1);
         }
-
         chargerIncidents();
         System.out.println("[SERVER] " + incidents.size() + " incident(s) charge(s).");
     }
 
 
-    // Methodes RMI (dans IHelpOps)
+    // methodes RMI (dans RMIHelpOps)
     @Override
     public Incident signalerIncident(String tokenValeur, String categorie,
                                      String titre, String description) throws RemoteException {
@@ -85,8 +83,7 @@ public class HelpOpsServer extends UnicastRemoteObject implements IHelpOps {
         return "HelpOpsServer OK";
     }
 
-    // Methode utilitaire : recupere le login depuis le token (via Auth)
-
+    // recup le login depuis le token (via Auth)
     private String loginDepuisToken(String tokenValeur) throws RemoteException {
         String login = auth.getLoginDepuisToken(tokenValeur);
         if (login == null) {
@@ -96,7 +93,7 @@ public class HelpOpsServer extends UnicastRemoteObject implements IHelpOps {
     }
 
     // save et charge données
-    @SuppressWarnings("unchecked")
+    @SuppressWarnings("unchecked")  // pour le cast de List<Incident>
     private void chargerIncidents() {
         try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream(FICHIER_INCIDENTS))) {
             incidents  = (List<Incident>) ois.readObject();
@@ -122,7 +119,6 @@ public class HelpOpsServer extends UnicastRemoteObject implements IHelpOps {
     public static void main(String[] args) {
         String authHost = (args.length > 0) ? args[0] : "localhost";
         int    authPort = 2000;
-
         try {
             System.setProperty("file.encoding", "UTF-8");
             Registry registry = LocateRegistry.createRegistry(1099);
@@ -130,7 +126,6 @@ public class HelpOpsServer extends UnicastRemoteObject implements IHelpOps {
 
             HelpOpsServer server = new HelpOpsServer(authHost, authPort);
             registry.rebind("HelpOps", server);
-
             System.out.println("[SERVER] Service 'HelpOps' enregistre. En attente de connexions...");
         } catch (Exception e) {
             System.err.println("[SERVER] Erreur demarrage : " + e.getMessage());
