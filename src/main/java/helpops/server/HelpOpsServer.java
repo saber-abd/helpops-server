@@ -69,6 +69,7 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
 
             pstmt.setObject(1, userUuid);
+
             ResultSet rs = pstmt.executeQuery();
 
             while (rs.next()) {
@@ -106,9 +107,12 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
             if (rs.next()) {
                 UUID auteurUuid = (UUID) rs.getObject("user_uuid");
 
-                // 3. Condition de visibilité :
-                // Soit c'est mon incident (demandeur == auteur)
-                // Soit je suis un agent (role == AGENT)
+                /*
+                Condition de visibilité :
+                Soit c'est mon incident (demandeur == auteur)
+                Soit je suis un agent (role == AGENT)
+                */
+
                 if (demandeurUuid.equals(auteurUuid) || "AGENT".equalsIgnoreCase(roleDemandeur)) {
                     return extraireIncident(rs); // Ta méthode helper qui remplit l'objet Incident
                 } else {
