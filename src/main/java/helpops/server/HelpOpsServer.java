@@ -4,7 +4,6 @@ import helpops.interfaces.RMIAuthService;
 import helpops.interfaces.RMIHelpOps;
 import helpops.model.Incident;
 import helpops.utils.DatabaseManager;
-
 import java.rmi.RemoteException;
 import java.rmi.registry.LocateRegistry;
 import java.rmi.registry.Registry;
@@ -34,17 +33,13 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
                                      String titre, String description) throws RemoteException {
         UUID userUuid = auth.getUuidDepuisToken(tokenValeur);
         if (userUuid == null) return null;
-
         String sql = "INSERT INTO incidents (user_uuid, categorie, titre, description) VALUES (?, ?, ?, ?) RETURNING id";
-
         try (Connection conn = DatabaseManager.getConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
-
             pstmt.setObject(1, userUuid);
             pstmt.setString(2, categorie);
             pstmt.setString(3, titre);
             pstmt.setString(4, description);
-
             ResultSet rs = pstmt.executeQuery();
             if (rs.next()) {
                 int idGenerated = rs.getInt(1);
@@ -54,24 +49,18 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
         } catch (SQLException e) {
             e.printStackTrace();
         }
-        return null;
-    }
+        return null;}
 
     @Override
     public List<Incident> listerMesIncidents(String tokenValeur) throws RemoteException {
         UUID userUuid = auth.getUuidDepuisToken(tokenValeur);
         if (userUuid == null) return null;
-
         List<Incident> mesIncidents = new ArrayList<>();
         String sql = "SELECT * FROM incidents WHERE user_uuid = ?";
-
         try (Connection conn = DatabaseManager.getConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
-
             pstmt.setObject(1, userUuid);
-
             ResultSet rs = pstmt.executeQuery();
-
             while (rs.next()) {
                 mesIncidents.add(new Incident(
                         rs.getInt("id"),
@@ -84,46 +73,28 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
         } catch (SQLException e) {
             e.printStackTrace();
         }
-        return mesIncidents;
-    }
+        return mesIncidents;}
 
     @Override
     public Incident consulterIncident(String tokenValeur, int id) throws RemoteException {
-        // 1. On identifie qui fait la demande
         UUID demandeurUuid = auth.getUuidDepuisToken(tokenValeur);
         String roleDemandeur = auth.getRoleDepuisToken(tokenValeur);
-
         if (demandeurUuid == null) return null;
-
-        // 2. On cherche l'incident uniquement par son ID
         String sql = "SELECT * FROM incidents WHERE id = ?";
-
         try (Connection conn = DatabaseManager.getConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
-
             pstmt.setInt(1, id);
             ResultSet rs = pstmt.executeQuery();
-
             if (rs.next()) {
                 UUID auteurUuid = (UUID) rs.getObject("user_uuid");
-
-                /*
-                Condition de visibilité :
-                Soit c'est mon incident (demandeur == auteur)
-                Soit je suis un agent (role == AGENT)
-                */
-
                 if (demandeurUuid.equals(auteurUuid) || "AGENT".equalsIgnoreCase(roleDemandeur)) {
-                    return extraireIncident(rs); // Ta méthode helper qui remplit l'objet Incident
+                    return extraireIncident(rs);
                 } else {
-                    System.out.println("[SERVER] Accès refusé pour l'ID " + id + " (Demandeur non autorisé)");
-                }
-            }
+                    System.out.println("[SERVER] Accès refusé pour l'ID " + id );
+                }}
         } catch (SQLException e) {
-            e.printStackTrace();
-        }
-        return null;
-    }
+            e.printStackTrace();}
+        return null;}
 
     @Override
     public List<Incident> listerIncidentsOuverts(String tokenValeur) throws RemoteException {
@@ -135,16 +106,12 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
     public boolean prendreEnChargeIncident(String tokenValeur, int id) throws RemoteException {
         verifierAccesAgent(tokenValeur);
         UUID agentUuid = auth.getUuidDepuisToken(tokenValeur);
-
-        // On ne prend que si c'est encore 'OPEN'
         String sql = "UPDATE incidents SET statut = 'ASSIGNED', agent_uuid = ?, date_assignation = CURRENT_TIMESTAMP " +
                 "WHERE id = ? AND statut = 'OPEN'";
-
         try (Connection conn = DatabaseManager.getConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             pstmt.setObject(1, agentUuid);
             pstmt.setInt(2, id);
-
             int rowsAffected = pstmt.executeUpdate();
             if (rowsAffected == 0) {
                 throw new RemoteException("ÉCHEC : L'incident est déjà pris en charge ou n'existe pas.");
@@ -153,8 +120,7 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
             return true;
         } catch (SQLException e) {
             throw new RemoteException("Erreur BDD lors de la prise en charge", e);
-        }
-    }
+        }}
 
     @Override
     public List<Incident> listerMesAssignations(String tokenValeur) throws RemoteException {
@@ -197,9 +163,10 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
 
     @Override
     public List<Incident> listerTousLesIncidents(String tokenValeur) throws RemoteException {
-        verifierAccesAgent(tokenValeur); // Sécurité : seul un agent peut voir tout le parc
+        verifierAccesAgent(tokenValeur);
         return recupererIncidents("SELECT * FROM incidents ORDER BY date_creation DESC", null);
     }
+
     @Override
     public String ping() throws RemoteException {
         return "HelpOpsServer OK";
@@ -208,15 +175,11 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
     public static void main(String[] args) {
         try {
             Registry registry = LocateRegistry.getRegistry("localhost", 1099);
-
             HelpOpsServer server = new HelpOpsServer("localhost", 1099);
-
             registry.rebind("HelpOps", server);
-
             System.out.println("[SERVER] Base PostgreSQL connectée.");
             System.out.println("[SERVER] Ecoute sur le port 1099.");
         } catch (Exception e) {
             e.printStackTrace();
-        }
-    }
+        }}
 }
