@@ -2,6 +2,8 @@ package helpops.server;
 
 import helpops.interfaces.RMIAuthService;
 import helpops.interfaces.RMIHelpOps;
+import helpops.interfaces.RMISupervisionClient;
+import helpops.model.Evenement;
 import helpops.model.Incident;
 import helpops.model.Statistiques;
 import helpops.utils.DatabaseManager;
@@ -10,16 +12,19 @@ import java.rmi.registry.LocateRegistry;
 import java.rmi.registry.Registry;
 import java.rmi.server.UnicastRemoteObject;
 import java.sql.*;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 
 // Serveur de gestion des incidents.
 
 // v3 concurrence sur les ressources BD (probleme lecteurs/ecrivains)
 public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
+
+    // liste des agents connecter
+    private final List<RMISupervisionClient> abonnes = Collections.synchronizedList(new ArrayList<>());
+
+    // liste des 10 derniers événements
+    private final List<Evenement> historique = Collections.synchronizedList(new LinkedList<>());
+
     private RMIAuthService auth;
 
     public HelpOpsServer(String authHost, int authPort) throws RemoteException {
@@ -52,6 +57,9 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
             if (rs.next()) {
                 int idGenerated = rs.getInt(1);
                 System.out.println("[SERVER] Incident #" + idGenerated + " cree pour " + userUuid);
+                // Juste après l'insertion réussie (idGenerated)
+                // Juste après le ResultSet rs = pstmt.executeQuery(); et la récupération de idGenerated
+                diffuserEvenement(new Evenement("CREATION", idGenerated, "Nouveau ticket cree par [ID: " + userUuid + "]"));
                 return new Incident(idGenerated, userUuid, categorie, titre, description);
             }
         } catch (SQLException e) {
@@ -156,6 +164,8 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
                 upd.executeUpdate();
                 conn.commit();
                 System.out.println("[SERVER] Incident #" + id + " assigne a l'agent " + agentUuid);
+                // Juste avant le conn.commit()
+                diffuserEvenement(new Evenement("PRISE_EN_CHARGE", id, "Ticket pris par l'agent [ID: " + agentUuid + "]"));
                 return true;
             } catch (RemoteException re) {
                 try { conn.rollback(); } catch (SQLException ignored) {}
@@ -216,6 +226,8 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
                 upd.executeUpdate();
                 conn.commit();
                 System.out.println("[SERVER] Ticket #" + id + " resolu par l'agent " + agentUuid);
+                // Juste avant le conn.commit()
+                diffuserEvenement(new Evenement("RESOLUTION", id, "Ticket clos par l'agent [ID: " + agentUuid + "]"));
                 return true;
             } catch (RemoteException re) {
                 try { conn.rollback(); } catch (SQLException ignored) {}
@@ -248,6 +260,8 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
             if (rs.next()) {
                 int idGenerated = rs.getInt(1);
                 System.out.println("[SERVER] Ticket #" + idGenerated + " cree par agent pour l'utilisateur " + loginCible);
+                // Juste après l'insertion
+                diffuserEvenement(new Evenement("CREATION_TIERS", idGenerated, "Agent a cree un ticket pour [ID: " + targetUuid + "]"));
                 return new Incident(idGenerated, targetUuid, categorie, titre, description);
             }
         } catch (SQLException e) {
@@ -316,8 +330,29 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
         return stats;
     }
 
-    //  helpers
+    // V3 supervision
+    @Override
+    public void sAbonner(String tokenValeur, RMISupervisionClient client) throws RemoteException {
+        verifierAccesAgent(tokenValeur);
+        if (!abonnes.contains(client)) {
+            abonnes.add(client);
+            System.out.println("[SUPERVISION] Un nouvel agent s'est abonne.");
+            // Envoie  l'historique des derniers événements
+            synchronized (historique) {
+                for (Evenement e : historique) {
+                    client.notifier(e);
+                }
+            }
+        }
+    }
 
+    @Override
+    public void seDesabonner(String tokenValeur, RMISupervisionClient client) throws RemoteException {
+        abonnes.remove(client);
+        System.out.println("[SUPERVISION] Un agent s'est desabonne.");
+    }
+
+    //  helpers
     private void verifierAccesAgent(String token) throws RemoteException {
         String role = auth.getRoleDepuisToken(token);
         if (!"AGENT".equalsIgnoreCase(role)) {
@@ -356,6 +391,27 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
         i.setDateResolution(rs.getTimestamp("date_resolution"));     // V3
         i.setMessageResolution(rs.getString("message_resolution"));  // V3
         return i;
+    }
+
+    private void diffuserEvenement(Evenement e) {
+        synchronized (historique) {
+            if (historique.size() >= 10) {
+                historique.remove(0);
+            }
+            historique.add(e);
+        }
+        // Envoi en direct à tous les abonnés
+        List<RMISupervisionClient> aRetirer = new ArrayList<>();
+        synchronized (abonnes) {
+            for (RMISupervisionClient client : abonnes) {
+                try {
+                    client.notifier(e);
+                } catch (RemoteException ex) {
+                    aRetirer.add(client);
+                }
+            }
+            abonnes.removeAll(aRetirer);
+        }
     }
 
     @Override
