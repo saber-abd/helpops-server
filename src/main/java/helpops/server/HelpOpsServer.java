@@ -2,11 +2,13 @@ package helpops.server;
 
 import helpops.interfaces.RMIAuthService;
 import helpops.interfaces.RMIHelpOps;
-import helpops.interfaces.RMISupervisionClient;
-import helpops.model.Evenement;
 import helpops.model.Incident;
 import helpops.model.Statistiques;
 import helpops.utils.DatabaseManager;
+
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.InetAddress;
 import java.rmi.RemoteException;
 import java.rmi.registry.LocateRegistry;
 import java.rmi.registry.Registry;
@@ -14,18 +16,13 @@ import java.rmi.server.UnicastRemoteObject;
 import java.sql.*;
 import java.util.*;
 
-// Serveur de gestion des incidents.
+import static helpops.server.IncidentHelper.extraireIncident;
 
-// v3 concurrence sur les ressources BD (probleme lecteurs/ecrivains)
+// Server de gestion des incidents.
 public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
 
-    // liste des agents connecter
-    private final List<RMISupervisionClient> abonnes = Collections.synchronizedList(new ArrayList<>());
-
-    // liste des 10 derniers événements
-    private final List<Evenement> historique = Collections.synchronizedList(new LinkedList<>());
-
     private RMIAuthService auth;
+    private DatagramSocket udpSocket;
 
     public HelpOpsServer(String authHost, int authPort) throws RemoteException {
         super();
@@ -37,10 +34,14 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
             System.err.println("[SERVER] Erreur liaison Auth : " + e.getMessage());
             System.exit(1);
         }
+        try {
+            this.udpSocket = new DatagramSocket();
+        } catch (Exception e) {
+            System.err.println("[SERVER] Erreur init UDP : " + e.getMessage());
+        }
     }
 
     //  operations UTILISATEUR
-
     @Override
     public Incident signalerIncident(String tokenValeur, String categorie,
                                      String titre, String description) throws RemoteException {
@@ -57,9 +58,7 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
             if (rs.next()) {
                 int idGenerated = rs.getInt(1);
                 System.out.println("[SERVER] Incident #" + idGenerated + " cree pour " + userUuid);
-                // Juste après l'insertion réussie (idGenerated)
-                // Juste après le ResultSet rs = pstmt.executeQuery(); et la récupération de idGenerated
-                diffuserEvenement(new Evenement("CREATION", idGenerated, "Nouveau ticket cree par [ID: " + userUuid + "]"));
+                diffuserEvenementUDP("CRÉATION: Nouveau ticket #" + idGenerated + " signalé par l'utilisateur.");
                 return new Incident(idGenerated, userUuid, categorie, titre, description);
             }
         } catch (SQLException e) {
@@ -123,8 +122,7 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
 
     //  operations AGENT ecriture avec transactions
 
-    // v3 SELECT FOR UPDATE garantit qu'un seul agent peut prendre un ticket a la fois
-    // si deux agents tentent simultanement alors le second obtient un message metier clair
+    // v3.1 SELECT FOR UPDATE garantit qu'un seul agent peut prendre un ticket a la fois
     @Override
     public boolean prendreEnChargeIncident(String tokenValeur, int id) throws RemoteException {
         verifierAccesAgent(tokenValeur);
@@ -163,9 +161,9 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
                 upd.setInt(2, id);
                 upd.executeUpdate();
                 conn.commit();
+                diffuserEvenementUDP("PRISE EN CHARGE: Le ticket #" + id + " a été assigné à l'agent [UUID: " + agentUuid + "].");
                 System.out.println("[SERVER] Incident #" + id + " assigne a l'agent " + agentUuid);
-                // Juste avant le conn.commit()
-                diffuserEvenement(new Evenement("PRISE_EN_CHARGE", id, "Ticket pris par l'agent [ID: " + agentUuid + "]"));
+
                 return true;
             } catch (RemoteException re) {
                 try { conn.rollback(); } catch (SQLException ignored) {}
@@ -179,7 +177,7 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
         }
     }
 
-    // v3 cloture d'un ticket
+    // v3.1 cloture d'un ticket
     @Override
     public boolean resoudreTicket(String tokenValeur, int id, String messageResolution) throws RemoteException {
         verifierAccesAgent(tokenValeur);
@@ -201,7 +199,7 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
                 }
                 String statut = rs.getString("statut");
                 UUID agentAssigneUuid = (UUID) rs.getObject("agent_uuid");
-                // verifications metier
+                // verifications
                 if ("OPEN".equalsIgnoreCase(statut)) {
                     conn.rollback();
                     throw new RemoteException("Le ticket #" + id + " n'est pas encore assigne (statut: OPEN).");
@@ -225,9 +223,8 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
                 upd.setInt(2, id);
                 upd.executeUpdate();
                 conn.commit();
+                diffuserEvenementUDP("RÉSOLUTION: Le ticket #" + id + " est désormais clos (Statut: RESOLVED).");
                 System.out.println("[SERVER] Ticket #" + id + " resolu par l'agent " + agentUuid);
-                // Juste avant le conn.commit()
-                diffuserEvenement(new Evenement("RESOLUTION", id, "Ticket clos par l'agent [ID: " + agentUuid + "]"));
                 return true;
             } catch (RemoteException re) {
                 try { conn.rollback(); } catch (SQLException ignored) {}
@@ -241,7 +238,7 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
         }
     }
 
-    // v3 agent cree un ticket pour un utilisateur identifie par son login
+    // v3.1 agent cree un ticket pour un utilisateur identifie par son login
     @Override
     public Incident creerTicketPourUtilisateur(String tokenValeur, String loginCible, String categorie, String titre, String description) throws RemoteException {
         verifierAccesAgent(tokenValeur);
@@ -260,8 +257,7 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
             if (rs.next()) {
                 int idGenerated = rs.getInt(1);
                 System.out.println("[SERVER] Ticket #" + idGenerated + " cree par agent pour l'utilisateur " + loginCible);
-                // Juste après l'insertion
-                diffuserEvenement(new Evenement("CREATION_TIERS", idGenerated, "Agent a cree un ticket pour [ID: " + targetUuid + "]"));
+                diffuserEvenementUDP("CRÉATION TIERS: Ticket #" + idGenerated + " créé par un agent pour " + loginCible + ".");
                 return new Incident(idGenerated, targetUuid, categorie, titre, description);
             }
         } catch (SQLException e) {
@@ -270,7 +266,44 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
         return null;
     }
 
-    // v3 statistiques fonctionnement
+    // ajout supplementaire -> deleguer un ticket
+    @Override
+    public boolean deleguerTicket(String tokenValeur, int id, String loginNouvelAgent) throws RemoteException {
+        verifierAccesAgent(tokenValeur);
+        UUID agentEmetteurUuid = auth.getUuidDepuisToken(tokenValeur);
+        UUID nouvelAgentUuid = auth.getUuidDepuisLogin(loginNouvelAgent);
+
+        if (nouvelAgentUuid == null) throw new RemoteException("Agent cible introuvable.");
+
+        try (Connection conn = DatabaseManager.getConnection()) {
+            conn.setAutoCommit(false);
+            String sql = "SELECT agent_uuid, statut FROM incidents WHERE id = ? FOR UPDATE";
+            PreparedStatement ps = conn.prepareStatement(sql);
+            ps.setInt(1, id);
+            ResultSet rs = ps.executeQuery();
+
+            if (rs.next()) {
+                UUID actuel = (UUID) rs.getObject("agent_uuid");
+                if (actuel != null && actuel.equals(agentEmetteurUuid)) {
+                    String upd = "UPDATE incidents SET agent_uuid = ? WHERE id = ?";
+                    PreparedStatement ups = conn.prepareStatement(upd);
+                    ups.setObject(1, nouvelAgentUuid);
+                    ups.setInt(2, id);
+                    ups.executeUpdate();
+                    conn.commit();
+
+                    // Notification via le nouveau flux
+                    diffuserEvenementUDP("DELEGATION: Ticket #" + id + " transféré à " + loginNouvelAgent);
+                    return true;
+                }
+            }
+            conn.rollback();
+            return false;
+        } catch (SQLException e) { throw new RemoteException(e.getMessage()); }
+    }
+
+    // v3.1 statistiques fonctionnement
+
     @Override
     public Statistiques getStatistiques(String tokenValeur) throws RemoteException {
         verifierAccesAgent(tokenValeur);
@@ -330,26 +363,18 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
         return stats;
     }
 
-    // V3 supervision
-    @Override
-    public void sAbonner(String tokenValeur, RMISupervisionClient client) throws RemoteException {
-        verifierAccesAgent(tokenValeur);
-        if (!abonnes.contains(client)) {
-            abonnes.add(client);
-            System.out.println("[SUPERVISION] Un nouvel agent s'est abonne.");
-            // Envoie  l'historique des derniers événements
-            synchronized (historique) {
-                for (Evenement e : historique) {
-                    client.notifier(e);
-                }
-            }
-        }
-    }
+    // V3.2 supervision
 
-    @Override
-    public void seDesabonner(String tokenValeur, RMISupervisionClient client) throws RemoteException {
-        abonnes.remove(client);
-        System.out.println("[SUPERVISION] Un agent s'est desabonne.");
+    private void diffuserEvenementUDP(String message) {
+        if (udpSocket == null) return;
+        try {
+            byte[] data = message.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            InetAddress addr = InetAddress.getByName("localhost");
+            DatagramPacket packet = new DatagramPacket(data, data.length, addr, 5000);
+            udpSocket.send(packet);
+        } catch (Exception ex) {
+            System.err.println("[ERREUR] Echec diffusion : " + ex.getMessage());
+        }
     }
 
     //  helpers
@@ -361,56 +386,10 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
     }
 
     private List<Incident> recupererIncidents(String sql, Object param) throws RemoteException {
-        List<Incident> liste = new ArrayList<>();
-        try (Connection conn = DatabaseManager.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            if (param != null) pstmt.setObject(1, param);
-            ResultSet rs = pstmt.executeQuery();
-            while (rs.next()) {
-                liste.add(extraireIncident(rs));
-            }
+        try (Connection conn = DatabaseManager.getConnection()) {
+            return IncidentHelper.recupererListe(conn, sql, param);
         } catch (SQLException e) {
             throw new RemoteException("Erreur lecture incidents : " + e.getMessage());
-        }
-        return liste;
-    }
-
-    // remplis objet Incident depuis un ResultSet (tous les champs)
-    private Incident extraireIncident(ResultSet rs) throws SQLException {
-        Incident i = new Incident(
-                rs.getInt("id"),
-                (UUID) rs.getObject("user_uuid"),
-                rs.getString("categorie"),
-                rs.getString("titre"),
-                rs.getString("description")
-        );
-        i.setStatut(rs.getString("statut"));
-        i.setAgentUuid((UUID) rs.getObject("agent_uuid"));
-        i.setDateCreation(rs.getTimestamp("date_creation"));
-        i.setDateAssignation(rs.getTimestamp("date_assignation"));
-        i.setDateResolution(rs.getTimestamp("date_resolution"));     // V3
-        i.setMessageResolution(rs.getString("message_resolution"));  // V3
-        return i;
-    }
-
-    private void diffuserEvenement(Evenement e) {
-        synchronized (historique) {
-            if (historique.size() >= 10) {
-                historique.remove(0);
-            }
-            historique.add(e);
-        }
-        // Envoi en direct à tous les abonnés
-        List<RMISupervisionClient> aRetirer = new ArrayList<>();
-        synchronized (abonnes) {
-            for (RMISupervisionClient client : abonnes) {
-                try {
-                    client.notifier(e);
-                } catch (RemoteException ex) {
-                    aRetirer.add(client);
-                }
-            }
-            abonnes.removeAll(aRetirer);
         }
     }
 
