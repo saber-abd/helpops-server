@@ -307,64 +307,13 @@ public class HelpOpsServer extends UnicastRemoteObject implements RMIHelpOps {
     @Override
     public Statistiques getStatistiques(String tokenValeur) throws RemoteException {
         verifierAccesAgent(tokenValeur);
-        Statistiques stats = new Statistiques();
         try (Connection conn = DatabaseManager.getConnection()) {
-            // total des tickets
-            try (ResultSet rs = conn.createStatement()
-                    .executeQuery("SELECT COUNT(*) FROM incidents")) {
-                if (rs.next()) stats.setTotalTickets(rs.getInt(1));
-            }
-            // tickets resolus
-            try (PreparedStatement ps = conn.prepareStatement(
-                    "SELECT COUNT(*) FROM incidents WHERE statut = 'RESOLVED'");
-                 ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) stats.setTicketsResolus(rs.getInt(1));
-            }
-            // tickets par etat
-            Map<String, Integer> parEtat = new HashMap<>();
-            try (ResultSet rs = conn.createStatement()
-                    .executeQuery("SELECT statut, COUNT(*) FROM incidents GROUP BY statut ORDER BY statut")) {
-                while (rs.next()) parEtat.put(rs.getString(1), rs.getInt(2));
-            }
-            stats.setTicketsParEtat(parEtat);
-            // temps moyen OPEN -> RESOLVED (en heures)
-            try (ResultSet rs = conn.createStatement().executeQuery(
-                    "SELECT AVG(EXTRACT(EPOCH FROM (date_resolution - date_creation)) / 3600) " +
-                    "FROM incidents WHERE statut = 'RESOLVED' AND date_resolution IS NOT NULL")) {
-                if (rs.next()) {
-                    double val = rs.getDouble(1);
-                    stats.setTempsMoyenResolutionHeures(rs.wasNull() ? 0.0 : val);
-                }
-            }
-            // tickets par agent (via login)
-            Map<String, Integer> parAgent = new HashMap<>();
-            try (ResultSet rs = conn.createStatement().executeQuery(
-                    "SELECT u.login, COUNT(i.id) FROM incidents i " +
-                    "JOIN users u ON i.agent_uuid = u.user_uuid " +
-                    "WHERE i.agent_uuid IS NOT NULL GROUP BY u.login ORDER BY u.login")) {
-                while (rs.next()) parAgent.put(rs.getString(1), rs.getInt(2));
-            }
-            stats.setTicketsParAgent(parAgent);
-            // taux de pression = total tickets / nb agents actifs / nb jours activite
-            int nbAgents = parAgent.size();
-            if (nbAgents > 0) {
-                double nbJours = 1.0;
-                try (ResultSet rs = conn.createStatement().executeQuery(
-                        "SELECT GREATEST(1, EXTRACT(DAY FROM (NOW() - MIN(date_creation))) + 1) FROM incidents")) {
-                    if (rs.next()) nbJours = rs.getDouble(1);
-                }
-                stats.setTauxPression((double) stats.getTotalTickets() / nbAgents / nbJours);
-            }
-
+            return IncidentHelper.calculerStatistiques(conn);
         } catch (SQLException e) {
-            throw new RemoteException("Erreur calcul statistiques : " + e.getMessage());
+            throw new RemoteException("Erreur lors du calcul des statistiques : " + e.getMessage());
         }
-
-        return stats;
     }
-
     // V3.2 supervision
-
     private void diffuserEvenementUDP(String message) {
         if (udpSocket == null) return;
         try {
